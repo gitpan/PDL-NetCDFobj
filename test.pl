@@ -6,7 +6,7 @@
 # Change 1..1 below to 1..last_test_to_print .
 # (It may become useful if the test is moved to ./t subdirectory.)
 
-BEGIN { $| = 1; print "1..14\n"; }
+BEGIN { $| = 1; print "1..16\n"; }
 END {print "not ok 1\n" unless $loaded;}
 use PDL;
 use PDL::NetCDFobj;
@@ -82,13 +82,21 @@ $out2 = $obj->get ('var1', long([0,1]), long([2,1]));
 $ok = ($out2 == pdl[2,5])->sum == $out2->nelem;
 print( ($ok ? "ok ": "not ok "), "13\n" ); 
 
+$out2 = $obj->get ('var1', long([0,1]), long([1,1]));
+$ok = ($out2 == pdl[2])->sum == $out2->nelem;
+print( ($ok ? "ok ": "not ok "), "14\n" ); 
+
+eval { $out2 = $obj->get ('var1', pdl([0,1]), pdl([1,1])); };
+$ok = ($@ =~ /values must be of PDL type long/);
+print( ($ok ? "ok ": "not ok "), "15\n" ); 
+
 # Test with a bogus file
 open (IN, ">bogus.nc");
 print IN "I'm not a netCDF file\n";
 close IN;
 eval { $obj2 = PDL::NetCDFobj->new ('bogus.nc'); };
 $ok = ($@ =~ /Not a netCDF file/);
-print( ($ok ? "ok ": "not ok "), "14\n" ); 
+print( ($ok ? "ok ": "not ok "), "16\n" ); 
 
 END {
   print "Removing test files, foo.nc, bogus.nc\n";

@@ -259,7 +259,7 @@ EOH
 
 pp_bless ("PDL::NetCDFobj");
 
-$VERSION = '0.01';
+$VERSION = '0.02';
 
 # Read in a modified netcdf.h file.  Define
 # a low-level perl interface to netCDF from these definitions.
@@ -587,7 +587,10 @@ sub new {
 					 my $name='x' x NC_MAX_NAME()); # Preallocate strings
       barf ("new:  Cannot inquire var name -- " . PDL::NetCDFobj::nc_strerror ($rc)) if $rc;	
       $self->{VARIDS}{$name} = $i;
-      
+
+      $rc  = PDL::NetCDFobj::nc_inq_vartype ($self->{NCID}, $self->{VARIDS}{$varnm}, 
+					     $self->{DATATYPES}{$name}=-999);
+      barf ("new:  Cannot inquire var type -- " . PDL::NetCDFobj::nc_strerror ($rc)) if $rc;	
     }
     
     # Specify that this file is out of define mode
@@ -672,9 +675,13 @@ sub put {
       $self->{DEFINE} = 1;
     }
 
-    my $rc = PDL::NetCDFobj::nc_def_var ($self->{NCID}, $varnm, $typemap3{$pdl->get_datatype}, 
+    my $datatype = $typemap3{$pdl->get_datatype};
+    my $rc = PDL::NetCDFobj::nc_def_var ($self->{NCID}, $varnm, $datatype, 
 			   scalar(@dimlens), $dimids, $self->{VARIDS}{$varnm}=-999);
     barf ("put:  Cannot define variable -- " . PDL::NetCDFobj::nc_strerror ($rc)) if $rc;    
+
+    $self->{DATATYPES}{$varnm} = $datatype;
+
   }
 
   # Make PDL physical
@@ -707,57 +714,26 @@ sub get {
   my $start = shift;  # PDL containing start of hyperslab to get
   my $count = shift;  # PDL containing count along each dimension
 
+  # Check to make sure that start and count are long values (not the default, double)
+  if ($start && (($start->get_datatype != PDL::long->[0]) ||
+		 ($count->get_datatype != PDL::long->[0]))) {
+    barf ("Start and Count values must be of PDL type long");
+  }
+
   barf ("Cannot find variable $varnm") if (!defined($self->{VARIDS}{$varnm}));
 
-  # Determine the type of this variable
-  my ($datatype, $ndims, $natts, $i);
-  $rc  = PDL::NetCDFobj::nc_inq_vartype ($self->{NCID}, $self->{VARIDS}{$varnm}, $datatype=-999);
-  $rc |= PDL::NetCDFobj::nc_inq_varndims ($self->{NCID}, $self->{VARIDS}{$varnm}, $ndims=-999);
-  my $dimids = zeroes (PDL::long, $ndims);
-  $rc |= PDL::NetCDFobj::nc_inq_vardimid ($self->{NCID}, $self->{VARIDS}{$varnm}, $dimids);
-  barf ("get:  Cannot get info on this var id -- " . PDL::NetCDFobj::nc_strerror ($rc)) if $rc;    
-
-  # Find out size of each dimension of this NetCDF matrix
-  my ($name, $size, @cnt);
-  for ($i=0;$i<$ndims;$i++) {
-    my $rc = PDL::NetCDFobj::nc_inq_dim ($self->{NCID}, $dimids->at($i), $name='x' x NC_MAX_NAME(), $size=-999);
-    barf ("get:  Cannot get info on this dimension -- " . PDL::NetCDFobj::nc_strerror ($rc)) if $rc;    
-    push (@cnt, $size);
-  }
 
   my $pdl; # The PDL to return
   if (defined ($count)) {  # Get a hyperslab of the netCDF matrix
 
-#
-# These error checks commented out because profiling has shown 
-# that they take LOTS of time.  The user (I think) can rely on the
-# error messages given by netCDF.
-# D. Hunt, 1/2/98
-#
-#    barf ("Wrong number of elements in count")
-#      if (nelem($count) != @cnt);
-#
-#    my $diff = pdl (@cnt) - $count;
-#    barf ("One dimension of count greater than size of netCDF matrix")
-#      if (($diff < 0)->sum != 0);
-#
-#    barf ("Negative or zero counts not permitted")
-#      if (($count <= 0)->sum != 0);
-#
-#    barf ("Wrong number of elements in start vector") 
-#      if (nelem($start) != @cnt);
-#
-#    $diff = pdl (@cnt) - $start;
-#    barf ("One dimension of start greater than size of netCDF matrix")
-#      if (($diff < 0)->sum != 0);
-#
-#    barf ("Negative start values not permitted")
-#      if (($start < 0)->sum != 0);
-#
-    my $cnt = $count->index (($count != 1)->where); # Get rid of length-one dimensions
-    if (nelem($cnt) == 0) { $cnt = pdl (1); }    # If no dimensions left, add one single length one.
+    my $cnt;
+    if (($count == 1)->sum == $count->nelem) {
+      $cnt = pdl (1);
+    } else {
+      $cnt = $count->where ($count != 1); # Get rid of length-one dimensions
+    }
 
-    $pdl = &{$typemap{$datatype}}(reverse list $cnt);	
+    $pdl = &{$typemap{$self->{DATATYPES}{$varnm}}}(reverse list $cnt);	
 
     # Get the data
     $rc = &{$typemap7{$pdl->get_datatype}}($self->{NCID}, $self->{VARIDS}{$varnm}, 
@@ -766,8 +742,23 @@ sub get {
 
   } else { # get whole netCDF matrix
 
+    # Determine the type of this variable
+    my ($ndims, $natts, $i);
+    $rc |= PDL::NetCDFobj::nc_inq_varndims ($self->{NCID}, $self->{VARIDS}{$varnm}, $ndims=-999);
+    my $dimids = zeroes (PDL::long, $ndims);
+    $rc |= PDL::NetCDFobj::nc_inq_vardimid ($self->{NCID}, $self->{VARIDS}{$varnm}, $dimids);
+    barf ("get:  Cannot get info on this var id -- " . PDL::NetCDFobj::nc_strerror ($rc)) if $rc;    
+    
+    # Find out size of each dimension of this NetCDF matrix
+    my ($name, $size, @cnt);
+    for ($i=0;$i<$ndims;$i++) {
+      my $rc = PDL::NetCDFobj::nc_inq_dim ($self->{NCID}, $dimids->at($i), $name='x' x NC_MAX_NAME(), $size=-999);
+      barf ("get:  Cannot get info on this dimension -- " . PDL::NetCDFobj::nc_strerror ($rc)) if $rc;    
+      push (@cnt, $size);
+    }
+
     # Create empty PDL (of correct type and size) to hold output from NetCDF file
-    $pdl = &{$typemap{$datatype}}(reverse @cnt);	
+    $pdl = &{$typemap{$self->{DATATYPES}{$varnm}}}(reverse @cnt);	
 
     # Get the data
     $rc = &{$typemap4{$pdl->get_datatype}}($self->{NCID}, $self->{VARIDS}{$varnm}, $pdl);
